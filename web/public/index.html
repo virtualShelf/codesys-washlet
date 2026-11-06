@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title data-i18n="doc.title">MOMO-WASH 3000</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<main class="app">
+  <header class="bar">
+    <div>
+      <span class="tag">FB_Washlet · MODBUS TCP</span>
+      <h1><span data-i18n="h1">全自動もも洗浄装置</span> <span class="brand">MOMO-WASH 3000</span></h1>
+    </div>
+    <div class="bar__right">
+    <div class="lang" role="group" data-i18n-aria="lang.label" aria-label="表示言語">
+      <button type="button" data-lang="ja" aria-pressed="true">日本語</button>
+      <button type="button" data-lang="en" aria-pressed="false">EN</button>
+    </div>
+    <div class="link" id="link">
+      <span class="lamp" id="linkLamp"></span>
+      <span id="linkText" data-i18n="link.connecting">PLC に接続中…</span>
+      <span class="mono beat" id="plcBeat">♥ –</span>
+    </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- ===== 現場（トイレ） ===== -->
+    <section class="card stage">
+      <div class="card__head">
+        <h2 data-i18n-html="stage.title">現場 <small>— トイレ（機械モデル）</small></h2>
+        <div class="state">
+          <span class="badge" id="stateBadge">–</span>
+          <span class="alarm" id="alarmText"></span>
+        </div>
+      </div>
+
+      <svg class="toilet" viewBox="0 0 600 400" data-i18n-aria="stage.aria" aria-label="トイレの断面図">
+        <defs>
+          <linearGradient id="peachGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#ffd1b8" />
+            <stop offset="0.55" stop-color="#ff9e8a" />
+            <stop offset="1" stop-color="#f2727a" />
+          </linearGradient>
+          <linearGradient id="porcelain" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#ffffff" />
+            <stop offset="1" stop-color="#e6eef3" />
+          </linearGradient>
+          <linearGradient id="waterGrad" x1="0" y1="1" x2="0" y2="0">
+            <stop offset="0" id="waterStop0" stop-color="#5fb8ff" />
+            <stop offset="1" id="waterStop1" stop-color="#9ed6ff" />
+          </linearGradient>
+        </defs>
+
+        <!-- 床 -->
+        <rect x="0" y="360" width="600" height="40" class="floor" />
+        <ellipse id="puddle" cx="500" cy="366" rx="0" ry="0" class="puddle" />
+
+        <!-- 温水タンク -->
+        <g class="tank">
+          <rect x="50" y="70" width="100" height="170" rx="14" fill="url(#porcelain)" class="line" />
+          <rect x="66" y="96" width="68" height="120" rx="8" class="tank__window" />
+          <rect id="tankWater" x="66" y="120" width="68" height="96" rx="6" fill="url(#waterGrad)" />
+          <path id="heaterCoil" class="coil" d="M74 206 l8 -10 l8 10 l8 -10 l8 10 l8 -10 l8 10 l8 -10" />
+          <text x="100" y="88" class="label" text-anchor="middle" data-i18n="svg.tank">温水タンク</text>
+          <g id="fuse" class="fuse">
+            <rect x="112" y="226" width="30" height="10" rx="3" />
+            <text x="127" y="252" class="label small" text-anchor="middle" data-i18n="svg.fuse">ヒューズ</text>
+          </g>
+          <g id="steam" class="steam">
+            <path d="M80 62 q-8 -12 0 -24 q8 -12 0 -24" />
+            <path d="M100 58 q-8 -12 0 -24 q8 -12 0 -24" />
+            <path d="M120 62 q-8 -12 0 -24 q8 -12 0 -24" />
+          </g>
+        </g>
+
+        <!-- 便器 -->
+        <path class="bowl line" fill="url(#porcelain)"
+          d="M150 238 H440 Q440 300 370 318 L350 360 H230 L214 318 Q160 300 150 238 Z" />
+        <path class="bowl__inner" d="M190 240 H410 Q404 286 300 292 Q196 286 190 240 Z" />
+
+        <!-- ノズル -->
+        <g class="nozzle">
+          <rect x="150" y="246" width="34" height="16" rx="5" class="nozzle__house" />
+          <rect id="nozzleRod" x="176" y="250" width="10" height="8" rx="4" class="nozzle__rod" />
+          <circle id="nozzleTip" cx="186" cy="254" r="5" class="nozzle__tip" />
+        </g>
+
+        <!-- 便座（ノズルより手前） -->
+        <rect x="142" y="226" width="300" height="14" rx="7" class="seat line" />
+        <rect x="140" y="214" width="16" height="22" rx="4" class="seat__hinge" />
+
+        <!-- 水 -->
+        <g id="sprayFloor" class="spray spray--wild">
+          <path id="sprayFloorPath" d="" />
+        </g>
+        <g id="sprayBowl" class="spray spray--drip">
+          <path id="sprayBowlPath" d="" />
+        </g>
+
+        <!-- もも -->
+        <g id="peach" class="peach">
+          <g class="peach__legs">
+            <path d="M-22 52 q-4 26 -14 34" />
+            <path d="M22 52 q4 26 14 34" />
+            <ellipse cx="-38" cy="88" rx="10" ry="5" />
+            <ellipse cx="38" cy="88" rx="10" ry="5" />
+          </g>
+          <path class="peach__body" fill="url(#peachGrad)"
+            d="M0 -46 C-40 -62 -66 -20 -60 12 C-54 44 -24 62 0 50 C24 62 54 44 60 12 C66 -20 40 -62 0 -46 Z" />
+          <path class="peach__crease" d="M0 -46 C-8 -18 -8 22 0 50" />
+          <path class="peach__leaf" d="M2 -48 C14 -76 44 -74 50 -62 C34 -54 18 -50 2 -48 Z" />
+          <path class="peach__stem" d="M0 -46 q-2 -10 4 -16" />
+          <g id="face" class="face">
+            <g class="face__eyes" id="eyes"></g>
+            <path id="mouth" class="face__mouth" d="" />
+            <ellipse cx="-30" cy="4" rx="9" ry="5" class="face__blush" id="blushL" />
+            <ellipse cx="30" cy="4" rx="9" ry="5" class="face__blush" id="blushR" />
+            <path id="sweat" class="face__sweat" d="M44 -26 q6 10 0 14 q-6 -4 0 -14 Z" />
+          </g>
+        </g>
+        <g id="sprayPeach" class="spray spray--peach">
+          <path id="sprayPeachPath" d="" />
+        </g>
+        <g id="bubble" class="bubble">
+          <rect id="bubbleBox" x="0" y="0" width="150" height="40" rx="14" />
+          <text id="bubbleText" x="75" y="26" text-anchor="middle"></text>
+        </g>
+      </svg>
+
+      <div class="stage__controls">
+        <button class="btn btn--peach" id="sitBtn">🍑 ももを座らせる</button>
+        <button class="btn btn--ghost" id="mopBtn" data-i18n="btn.mop">🧽 床を拭く</button>
+      </div>
+      <ol class="howto">
+        <li data-i18n-html="howto.1">起動直後は非常停止扱い。まず <b>リセット</b></li>
+        <li data-i18n-html="howto.2">水温が 38℃ 付近になるのを待つ（待たないと <b>ひゃっ！</b>）</li>
+        <li data-i18n-html="howto.3">ももを座らせて <b>おしり</b>。洗浄中に立たせたり、非常停止を押したり</li>
+        <li data-i18n-html="howto.4">いたずらパネルで故障を入れて、PLC とハードのどちらが止めたか見る</li>
+      </ol>
+    </section>
+
+    <!-- ===== 操作 ===== -->
+    <aside class="side">
+      <section class="card remote">
+        <div class="card__head"><h2 data-i18n="remote.title">壁リモコン</h2><span class="tag">HR0 bit2–4</span></div>
+        <div class="remote__body">
+          <button class="rbtn rbtn--wash" data-press="wash"><span>🍑</span><b data-i18n="remote.wash">おしり</b></button>
+          <button class="rbtn rbtn--stop" data-press="stop"><span>■</span><b data-i18n="remote.stop">止</b></button>
+          <button class="rbtn rbtn--reset" data-press="reset"><span>↺</span><b data-i18n="remote.reset">リセット</b></button>
+        </div>
+      </section>
+
+      <section class="card estop-card">
+        <div class="card__head"><h2 data-i18n="estop.title">非常停止</h2><span class="tag" data-i18n="estop.tag">NC接点 · 安全リレー直結</span></div>
+        <div class="estop-wrap">
+          <button class="estop" id="estopBtn" aria-pressed="false" data-i18n-aria="estop.aria" aria-label="非常停止">
+            <span class="estop__cap"></span>
+          </button>
+          <p class="estop__hint" id="estopHint">押すと、PLC を通さず動力が切れます</p>
+        </div>
+      </section>
+
+      <section class="card mind">
+        <div class="card__head"><h2 data-i18n="mind.title">PLC の気持ち</h2><span class="tag" data-i18n="mind.tag">インターロック</span></div>
+        <div class="permit">
+          <div class="permit__head"><span class="lamp" id="permitExtend"></span><span data-i18n="mind.extend">ノズルを出してよい？</span></div>
+          <div class="chips" id="chipsExtend"></div>
+        </div>
+        <div class="permit">
+          <div class="permit__head"><span class="lamp" id="permitSpray"></span><span data-i18n="mind.spray">水を出してよい？</span></div>
+          <div class="chips" id="chipsSpray"></div>
+        </div>
+        <p class="note" data-i18n="mind.note">PLC が受け取ったセンサ値で判定しています（PLC の目線）</p>
+      </section>
+    </aside>
+  </div>
+
+  <div class="lower">
+    <section class="card wiring">
+      <div class="card__head"><h2 data-i18n-html="wiring.title">配線 <small>— PLC の外側（ハード層）</small></h2></div>
+      <div class="wiring__grid" id="wiring">
+        <span class="wh" data-i18n="wiring.device">機器</span><span class="wh" data-i18n="wiring.cmd">PLC 指令</span><span class="wh" data-i18n="wiring.actual">実際</span>
+      </div>
+      <div class="hw">
+        <span class="hwchip" id="hwRelay">安全リレー</span>
+        <span class="hwchip" id="hwFuse">温度ヒューズ</span>
+        <span class="hwchip" id="hwWeld">ヒーターリレー</span>
+      </div>
+    </section>
+
+    <section class="card thermo">
+      <div class="card__head"><h2 data-i18n="thermo.title">水温</h2><span class="tag">HR1 ×100</span></div>
+      <div class="thermo__body">
+        <div class="thermo__tube">
+          <div class="thermo__fill" id="thermoFill"></div>
+          <span class="mark" style="--t:38" data-i18n="thermo.m38">38 目標</span>
+          <span class="mark mark--warn" style="--t:42" data-i18n="thermo.m42">42 PLC上限</span>
+          <span class="mark mark--hw" style="--t:55" data-i18n="thermo.m55">55 ヒューズ</span>
+        </div>
+        <div class="thermo__read">
+          <span class="big mono"><span id="tempText">–</span><small>℃</small></span>
+          <span class="sub" id="tempPlc">PLC 受信: –</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card mischief">
+      <div class="card__head"><h2 data-i18n="mischief.title">いたずらパネル</h2><span class="tag" data-i18n="mischief.tag">故障注入</span></div>
+      <div class="toggles" id="faults"></div>
+      <button class="btn btn--ghost btn--small" id="fuseBtn" data-i18n="mischief.fuse" hidden>🔧 温度ヒューズを交換する</button>
+    </section>
+
+    <section class="card damage">
+      <div class="card__head"><h2 data-i18n="damage.title">被害報告</h2><span class="tag" data-i18n="damage.tag">ゼロが正義</span></div>
+      <dl class="stats">
+        <div><dt data-i18n="damage.flood">床浸水</dt><dd><span class="mono" id="statFlood">0</span> ml</dd></div>
+        <div><dt data-i18n="damage.burn">やけど</dt><dd><span class="mono" id="statBurn">0</span> <span data-i18n="damage.times">回</span></dd></div>
+        <div><dt data-i18n="damage.cold">ひゃっ！</dt><dd><span class="mono" id="statCold">0</span> <span data-i18n="damage.times">回</span></dd></div>
+      </dl>
+      <div class="clean">
+        <span data-i18n="damage.clean">ももの清潔度</span>
+        <div class="clean__bar"><div id="cleanFill"></div></div>
+        <span class="mono" id="cleanText">0%</span>
+      </div>
+    </section>
+  </div>
+</main>
+<script src="i18n.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "codesys-washlet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "温水洗浄便座を CODESYS（ST）で制御し、Web 側の機械モデルと Modbus TCP でつないで非常停止・インターロックを学ぶサンプル",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "ui": "node src/server.ts",
+    "test": "node --test tests/plant.test.ts"
+  }
+}

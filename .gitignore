@@ -1,0 +1,24 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# OS / エディタ
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+
+# CODESYS が自動で作る一時ファイル・キャッシュ
+# （プロジェクト本体の *.project は管理対象。ただしバイナリなので差分は見えない）
+*.project.~u
+*.library.~u
+*.compileinfo
+*.bootinfo
+*.bootinfo_guids
+*.precompilecache
+*.opt
+*.~u
+
+# Claude への指示とデザインルール（手元だけで使い、公開しない）
+CLAUDE.md
+DESIGN.md
