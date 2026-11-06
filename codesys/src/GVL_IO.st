@@ -1,25 +1,22 @@
 (*
  * GVL_IO
- * 目的 : 機械の I/O の置き場所。ロジックは %IX/%QX や Modbus 配列を直接使わず、ここを使う。
- *        今は Web 側の機械モデルとつないでいるので、PLC_PRG が Modbus 配列と相互に詰め替える。
- *        実機につなぐときは、ここを実 I/O のマッピング先に変えるだけで FB_Washlet はそのまま使える。
+ * 目的 : 層と層の受け渡しの置き場所。ロジックは %IX/%QX や Modbus 配列を直接使わず、ここを使う。
+ *
+ *   stRawIn  … I/O 層（PRG_IoModbus.ReadInputs）が書く。IO から来た生の値
+ *   stIn     … 変換層（FB_WashInputConv）の出力を PLC_PRG が書く。制御が使う値
+ *   stOut    … 制御層（FB_Washlet）の出力を PLC_PRG が書く
+ *   stRawOut … PLC_PRG が stOut をコピーして書く。I/O 層（PRG_IoModbus.WriteOutputs）が読む
+ *
+ * 各変数を書くのは 1 か所だけ。
+ * 実機の IO ユニットに替えるときは、stRawIn / stRawOut を I/O マッピング先にして、
+ * PRG_IoModbus を外すだけで済む（変換層と制御層はそのまま）。
+ *
  * 履歴 : 2026-10-30 新規作成
+ *        2026-11-06 個別の BOOL をやめ、構造体 4 つにした
  *)
 VAR_GLOBAL
-    (* 入力（機械 → PLC） *)
-    bEStopOk       : BOOL;   (* 非常停止 NC接点。TRUE = 健全 *)
-    bSeated        : BOOL;   (* 着座センサ *)
-    bWashButton    : BOOL;
-    bStopButton    : BOOL;
-    bResetButton   : BOOL;
-    bNozzleAtFront : BOOL;   (* ノズル伸長端センサ *)
-    bNozzleAtHome  : BOOL;   (* ノズル収納端センサ *)
-    rWaterTemp     : REAL;   (* [℃] *)
-    bIoHealthy     : BOOL;   (* 入力が生きている（ウォッチドッグ） *)
-
-    (* 出力（PLC → 機械） *)
-    bNozzleExtend  : BOOL;
-    bNozzleRetract : BOOL;
-    bPump          : BOOL;
-    bHeater        : BOOL;
+    stRawIn  : ST_WashRawInputs;   (* 入力：IO → PLC（生の値） *)
+    stIn     : ST_WashInputs;      (* 入力：制御が使う値 *)
+    stOut    : ST_WashOutputs;     (* 出力：制御の結果 *)
+    stRawOut : ST_WashOutputs;     (* 出力：PLC → IO *)
 END_VAR

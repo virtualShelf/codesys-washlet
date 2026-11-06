@@ -1,84 +1,46 @@
 (*
  * PLC_PRG
- * 目的 : 入力の取り込み → 制御 FB → 出力の公開 の順に呼ぶ。
- *        GVL_IO を書くのはここだけ。
+ * 目的 : 層を順に呼ぶ。
+ *        I/O 層（入力）→ 変換層 → 制御層 → 出力のコピー → I/O 層（出力）
+ *
+ *   I/O 層  : PRG_IoModbus      Modbus 配列 ⇔ GVL_IO.stRawIn / stRawOut
+ *   変換層  : FB_WashInputConv  生の値 → 制御が使う値（換算・通信ウォッチドッグ）
+ *   制御層  : FB_Washlet        判断（非常停止・異常・インターロック・状態遷移）
+ *
+ * GVL_IO の各変数を書くのは 1 か所だけ（stRawIn は PRG_IoModbus、ほかはここ）。
  *
  * 構成 : 機械（ノズル・ヒーター・温度センサ・ボタン・非常停止）は Web 側にある。
  *        PLC は Modbus で「センサを読んで、出力を返す」だけ。実機の PLC と同じ立場。
- *
- * 通信ウォッチドッグ :
- *        Web 側は毎回 aFromTS[2] のハートビートを進めて書く。
- *        これが T_LINK_TIMEOUT の間変わらなければ、入力が途絶えたと判断する。
- *        （実機なら、リモート I/O の通信断やケーブル抜けに相当）
+ *        実機の IO ユニットに替えるときは、I/O 層だけを替える。
  *
  * 履歴 : 2026-10-30 新規作成
  *        2026-10-30 PRG_Sim を廃止。機械モデルを Web 側に移した
+ *        2026-11-06 層に分けた。詰め替えを PRG_IoModbus、換算とウォッチドッグを FB_WashInputConv へ移した
  *)
 PROGRAM PLC_PRG
 VAR
-    fbWashlet    : FB_Washlet;
-    tonLinkLost  : TON;
-    wLastTsBeat  : WORD;
-    wInBits      : WORD;
-    wOutBits     : WORD;
-    wEchoBits    : WORD;
-    wHeartbeat   : WORD;
-END_VAR
-VAR CONSTANT
-    T_LINK_TIMEOUT : TIME := T#500MS;   (* Web 側の書き込み周期 50 ms の 10 倍 *)
+    fbInputConv : FB_WashInputConv;
+    fbWashlet   : FB_Washlet;
 END_VAR
 
-(* ---- 1. 入力の取り込み（機械 → PLC） ---- *)
-wInBits := GVL_Modbus.aFromTS[0];
-GVL_IO.bEStopOk       := wInBits.0;   (* 接点が閉じている = 1 = 健全 *)
-GVL_IO.bSeated        := wInBits.1;
-GVL_IO.bWashButton    := wInBits.2;
-GVL_IO.bStopButton    := wInBits.3;
-GVL_IO.bResetButton   := wInBits.4;
-GVL_IO.bNozzleAtFront := wInBits.5;
-GVL_IO.bNozzleAtHome  := wInBits.6;
-GVL_IO.rWaterTemp     := WORD_TO_REAL(GVL_Modbus.aFromTS[1]) / 100.0;   (* [℃×100] → [℃] *)
+(* ---- 1. I/O 層（入力）：aFromTS → GVL_IO.stRawIn ---- *)
+PRG_IoModbus.ReadInputs();
 
-(* ハートビートが止まったら入力を信用しない。TON は毎サイクル呼ぶ *)
-tonLinkLost(IN := GVL_Modbus.aFromTS[2] = wLastTsBeat, PT := T_LINK_TIMEOUT);
-wLastTsBeat := GVL_Modbus.aFromTS[2];
-GVL_IO.bIoHealthy := NOT tonLinkLost.Q;
+(* ---- 2. 変換層：生の値 → 制御が使う値 ---- *)
+fbInputConv(stRawIn := GVL_IO.stRawIn);
+GVL_IO.stIn := fbInputConv.stIn;
 
-(* ---- 2. 制御 ---- *)
-fbWashlet(
-    bEStopOk       := GVL_IO.bEStopOk,
-    bSeated        := GVL_IO.bSeated,
-    bWashButton    := GVL_IO.bWashButton,
-    bStopButton    := GVL_IO.bStopButton,
-    bResetButton   := GVL_IO.bResetButton,
-    bNozzleAtFront := GVL_IO.bNozzleAtFront,
-    bNozzleAtHome  := GVL_IO.bNozzleAtHome,
-    rWaterTemp     := GVL_IO.rWaterTemp,
-    bIoHealthy     := GVL_IO.bIoHealthy);
+(* ---- 3. 制御層 ---- *)
+fbWashlet(stIn := GVL_IO.stIn);
+GVL_IO.stOut := fbWashlet.stOut;
 
-GVL_IO.bNozzleExtend  := fbWashlet.bNozzleExtend;
-GVL_IO.bNozzleRetract := fbWashlet.bNozzleRetract;
-GVL_IO.bPump          := fbWashlet.bPump;
-GVL_IO.bHeater        := fbWashlet.bHeater;
+(* ---- 4. 出力のコピー ---- *)
+// 実機で出力の向き（反転など）を合わせるなら、ここで詰め替える。今はそのまま
+GVL_IO.stRawOut := GVL_IO.stOut;
 
-(* ---- 3. 出力の公開（PLC → 機械） ---- *)
-wOutBits := 0;
-wOutBits.0 := GVL_IO.bNozzleExtend;
-wOutBits.1 := GVL_IO.bNozzleRetract;
-wOutBits.2 := GVL_IO.bPump;
-wOutBits.3 := GVL_IO.bHeater;
-wOutBits.4 := fbWashlet.bExtendPermit;
-wOutBits.5 := fbWashlet.bSprayPermit;
-
-(* PLC から見えている入力を、そのまま返す（画面の「PLC の気持ち」用） *)
-wEchoBits := wInBits;
-wEchoBits.7 := GVL_IO.bIoHealthy;
-
-wHeartbeat := wHeartbeat + 1;
-
-GVL_Modbus.aToTS[0] := TO_WORD(fbWashlet.eState);
-GVL_Modbus.aToTS[1] := TO_WORD(fbWashlet.eAlarm);
-GVL_Modbus.aToTS[2] := wOutBits;
-GVL_Modbus.aToTS[3] := wEchoBits;
-GVL_Modbus.aToTS[4] := GVL_Modbus.aFromTS[1];   (* PLC が受け取った水温 [℃×100] *)
-GVL_Modbus.aToTS[5] := wHeartbeat;
+(* ---- 5. I/O 層（出力）：GVL_IO.stRawOut と状態 → aToTS ---- *)
+PRG_IoModbus.eState        := fbWashlet.eState;
+PRG_IoModbus.eAlarm        := fbWashlet.eAlarm;
+PRG_IoModbus.bExtendPermit := fbWashlet.bExtendPermit;
+PRG_IoModbus.bSprayPermit  := fbWashlet.bSprayPermit;
+PRG_IoModbus.WriteOutputs();

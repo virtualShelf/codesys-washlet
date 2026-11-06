@@ -14,41 +14,26 @@
  *    動力を物理的に切る。この FB は「通常PLC側の振る舞い」の学習用。
  *
  * 入力:
- *   bEStopOk        非常停止が健全（NC接点。押される・断線で FALSE）
- *   bSeated         着座センサ
- *   bWashButton     「おしり」ボタン
- *   bStopButton     「止」ボタン（通常停止）
- *   bResetButton    リセットボタン
- *   bNozzleAtFront  ノズル伸長端センサ
- *   bNozzleAtHome   ノズル収納端センサ
- *   rWaterTemp      水温 [℃]
- *   bIoHealthy      入力が生きている（通信ウォッチドッグ。PLC_PRG で判定）
- * 出力:
- *   bNozzleExtend / bNozzleRetract  ノズル駆動
- *   bPump                           噴射ポンプ
- *   bHeater                         温水ヒーター
+ *   stIn            制御が使う入力（ST_WashInputs。中身は構造体の宣言を参照）
+ *                   VAR_INPUT（値渡し）にしている理由:
+ *                   - 数十バイトと小さく、コピーの重さは気にならない
+ *                   - FB を呼んだ時点の値がコピーされ、1 サイクルの間は値が変わらない
+ *                   - モニタで、FB が判断に使った値そのものが見える
+ * 出力（機械を動かす出力）:
+ *   stOut           ノズル伸長・収納、噴射ポンプ、温水ヒーター（ST_WashOutputs）
+ * 出力（状態を知らせる出力。機械は動かさない）:
  *   eState / eAlarm                 状態と、最初に起きた異常
  *   bExtendPermit / bSprayPermit    インターロック成立（監視用）
  *
  * 履歴 : 2026-10-30 新規作成
+ *        2026-11-06 入力 9 本を stIn 1 本に、アクチュエータの出力を stOut にまとめた（ロジックは変えていない）
  *)
 FUNCTION_BLOCK FB_Washlet
 VAR_INPUT
-    bEStopOk       : BOOL;
-    bSeated        : BOOL;
-    bWashButton    : BOOL;
-    bStopButton    : BOOL;
-    bResetButton   : BOOL;
-    bNozzleAtFront : BOOL;
-    bNozzleAtHome  : BOOL;
-    rWaterTemp     : REAL;   (* [℃] *)
-    bIoHealthy     : BOOL;   (* 入力が生きている（通信ウォッチドッグ OK） *)
+    stIn : ST_WashInputs;
 END_VAR
 VAR_OUTPUT
-    bNozzleExtend  : BOOL;
-    bNozzleRetract : BOOL;
-    bPump          : BOOL;
-    bHeater        : BOOL;
+    stOut          : ST_WashOutputs;
     eState         : E_WashState := E_WashState.IDLE;
     eAlarm         : E_WashAlarm := E_WashAlarm.NONE;
     bExtendPermit  : BOOL;
@@ -73,19 +58,19 @@ VAR CONSTANT
 END_VAR
 
 (* ---- 1. FB は毎サイクル呼ぶ（IN で制御する） ---- *)
-rtrigWash(CLK := bWashButton);
-rtrigReset(CLK := bResetButton);
+rtrigWash(CLK := stIn.bWashButton);
+rtrigReset(CLK := stIn.bResetButton);
 tonExtend (IN := eState = E_WashState.NOZZLE_EXTEND,  PT := T_EXTEND_TIMEOUT);
 tonRetract(IN := eState = E_WashState.NOZZLE_RETRACT, PT := T_RETRACT_TIMEOUT);
 tonSpray  (IN := eState = E_WashState.SPRAY,          PT := T_SPRAY_MAX);
 
 (* ---- 2. インターロック条件 ---- *)
-bTempOk       := rWaterTemp < R_TEMP_MAX;
-bExtendPermit := bEStopOk AND bIoHealthy AND bSeated AND bNozzleAtHome AND bTempOk;
-bSprayPermit  := bEStopOk AND bIoHealthy AND bSeated AND bNozzleAtFront AND bTempOk;
+bTempOk       := stIn.rWaterTemp < R_TEMP_MAX;
+bExtendPermit := stIn.bEStopOk AND stIn.bIoHealthy AND stIn.bSeated AND stIn.bNozzleAtHome AND bTempOk;
+bSprayPermit  := stIn.bEStopOk AND stIn.bIoHealthy AND stIn.bSeated AND stIn.bNozzleAtFront AND bTempOk;
 
 (* ---- 3. 非常停止・異常の割り込み（CASE より先に判定する） ---- *)
-IF NOT bEStopOk THEN
+IF NOT stIn.bEStopOk THEN
     IF eState <> E_WashState.ESTOP THEN
         eState := E_WashState.ESTOP;
         IF eAlarm = E_WashAlarm.NONE THEN
@@ -93,11 +78,11 @@ IF NOT bEStopOk THEN
         END_IF
     END_IF
 ELSIF eState <> E_WashState.ESTOP AND eState <> E_WashState.FAULT THEN
-    IF NOT bIoHealthy THEN
+    IF NOT stIn.bIoHealthy THEN
         // 入力が止まったら、センサの値は「最後に見えた値」でしかない。信用せず止める
         eState := E_WashState.FAULT;
         eAlarm := E_WashAlarm.IO_LINK_LOST;
-    ELSIF bNozzleAtFront AND bNozzleAtHome THEN
+    ELSIF stIn.bNozzleAtFront AND stIn.bNozzleAtHome THEN
         eState := E_WashState.FAULT;
         eAlarm := E_WashAlarm.NOZZLE_SENSOR_BOTH;
     ELSIF NOT bTempOk THEN
@@ -109,16 +94,16 @@ END_IF
 (* ---- 4. 通常の状態遷移 ---- *)
 CASE eState OF
 E_WashState.IDLE:
-    IF NOT bNozzleAtHome THEN
+    IF NOT stIn.bNozzleAtHome THEN
         eState := E_WashState.NOZZLE_RETRACT;      // 起動時など、出ていたら先に戻す
     ELSIF rtrigWash.Q AND bExtendPermit THEN
         eState := E_WashState.NOZZLE_EXTEND;
     END_IF
 
 E_WashState.NOZZLE_EXTEND:
-    IF NOT bSeated OR bStopButton THEN
+    IF NOT stIn.bSeated OR stIn.bStopButton THEN
         eState := E_WashState.NOZZLE_RETRACT;
-    ELSIF bNozzleAtFront THEN
+    ELSIF stIn.bNozzleAtFront THEN
         eState := E_WashState.SPRAY;
     ELSIF tonExtend.Q THEN
         eState := E_WashState.FAULT;
@@ -126,12 +111,12 @@ E_WashState.NOZZLE_EXTEND:
     END_IF
 
 E_WashState.SPRAY:
-    IF NOT bSprayPermit OR bStopButton OR tonSpray.Q THEN
+    IF NOT bSprayPermit OR stIn.bStopButton OR tonSpray.Q THEN
         eState := E_WashState.NOZZLE_RETRACT;      // 離席・止・時間切れは「正常な停止」
     END_IF
 
 E_WashState.NOZZLE_RETRACT:
-    IF bNozzleAtHome THEN
+    IF stIn.bNozzleAtHome THEN
         eState := E_WashState.IDLE;
     ELSIF tonRetract.Q THEN
         eState := E_WashState.FAULT;
@@ -140,14 +125,14 @@ E_WashState.NOZZLE_RETRACT:
 
 E_WashState.ESTOP:
     // 解除しただけでは動かさない。解除＋リセット操作で、安全側（収納）から再開
-    IF bEStopOk AND rtrigReset.Q THEN
+    IF stIn.bEStopOk AND rtrigReset.Q THEN
         eAlarm := E_WashAlarm.NONE;
         eState := E_WashState.NOZZLE_RETRACT;
     END_IF
 
 E_WashState.FAULT:
     // 原因が残っているうちはリセットを受け付けない
-    IF rtrigReset.Q AND bIoHealthy AND bTempOk AND NOT (bNozzleAtFront AND bNozzleAtHome) THEN
+    IF rtrigReset.Q AND stIn.bIoHealthy AND bTempOk AND NOT (stIn.bNozzleAtFront AND stIn.bNozzleAtHome) THEN
         eAlarm := E_WashAlarm.NONE;
         eState := E_WashState.NOZZLE_RETRACT;
     END_IF
@@ -158,16 +143,16 @@ ELSE
 END_CASE
 
 (* ---- 5. ヒーターのヒステリシス ---- *)
-IF rWaterTemp < R_TEMP_TARGET - R_TEMP_HYST THEN
+IF stIn.rWaterTemp < R_TEMP_TARGET - R_TEMP_HYST THEN
     bHeatDemand := TRUE;
-ELSIF rWaterTemp >= R_TEMP_TARGET THEN
+ELSIF stIn.rWaterTemp >= R_TEMP_TARGET THEN
     bHeatDemand := FALSE;
 END_IF
 
 (* ---- 6. 出力（書き込みはここだけ）。状態に加えて条件をもう一度かける ---- *)
-bNozzleExtend  := eState = E_WashState.NOZZLE_EXTEND  AND bEStopOk AND bSeated;
-bNozzleRetract := eState = E_WashState.NOZZLE_RETRACT AND bEStopOk AND bIoHealthy;
-bPump          := eState = E_WashState.SPRAY          AND bSprayPermit;
-bHeater        := bHeatDemand AND bEStopOk AND bIoHealthy AND bTempOk
+stOut.bNozzleExtend  := eState = E_WashState.NOZZLE_EXTEND  AND stIn.bEStopOk AND stIn.bSeated;
+stOut.bNozzleRetract := eState = E_WashState.NOZZLE_RETRACT AND stIn.bEStopOk AND stIn.bIoHealthy;
+stOut.bPump          := eState = E_WashState.SPRAY          AND bSprayPermit;
+stOut.bHeater        := bHeatDemand AND stIn.bEStopOk AND stIn.bIoHealthy AND bTempOk
                   AND eState <> E_WashState.FAULT
                   AND eState <> E_WashState.ESTOP;   // 解除しただけでは何も動かさない（ヒーターも）

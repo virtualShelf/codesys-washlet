@@ -15,13 +15,15 @@ flowchart LR
         HW["PLC の外の安全回路<br/>安全リレー / 温度ヒューズ"]
     end
     subgraph PLC["CODESYS"]
-        PRG["PLC_PRG<br/>詰め替え・通信の見張り"]
-        FB["FB_Washlet<br/>判断"]
+        IO["PRG_IoModbus<br/>I/O 層：詰め替え"]
+        CONV["FB_WashInputConv<br/>変換層：換算・通信の見張り"]
+        FB["FB_Washlet<br/>制御層：判断"]
     end
-    SENS -- "HR0〜HR2" --> PRG
-    PRG --> FB
-    FB --> PRG
-    PRG -- "IR0〜IR5" --> ACT
+    SENS -- "HR0〜HR2" --> IO
+    IO --> CONV
+    CONV --> FB
+    FB --> IO
+    IO -- "IR0〜IR5" --> ACT
     HW -. "PLC と関係なく動力を切る" .-> ACT
 ```
 
@@ -33,32 +35,66 @@ flowchart LR
 |---|---|---|
 | `E_WashState.st` | 列挙型 | 状態（IDLE / NOZZLE_EXTEND / SPRAY / NOZZLE_RETRACT / ESTOP / FAULT） |
 | `E_WashAlarm.st` | 列挙型 | 異常の理由（最初の1件だけ残す） |
+| `ST_WashRawInputs.st` | 構造体 | IO から来る生の値（ボタン・センサの BOOL、水温 ×100、ハートビート） |
+| `ST_WashInputs.st` | 構造体 | 制御が使う値（水温 [℃]、通信 OK を含む 9 つ） |
+| `ST_WashOutputs.st` | 構造体 | 機械を動かす出力 4 つ（伸長・収納・ポンプ・ヒーター） |
 | `GVL_Modbus.st` | GVL | Modbus のレジスタ配列（`aFromTS` = HR、`aToTS` = IR） |
-| `GVL_IO.st` | GVL | PLC から見た I/O の置き場所。実機にするときはここを差し替える |
-| `PLC_PRG.st` | プログラム | 入力の取り込み → FB 呼び出し → 出力の公開 |
-| `FB_Washlet.st` | FB | 本体。非常停止・異常・インターロック・状態遷移・ヒーター制御 |
+| `GVL_IO.st` | GVL | 層の間の受け渡し（`stRawIn` / `stIn` / `stOut` / `stRawOut`） |
+| `PRG_IoModbus.st` | プログラム | I/O 層。Modbus 配列 ⇔ `stRawIn` / `stRawOut`。アクション `ReadInputs` / `WriteOutputs` |
+| `FB_WashInputConv.st` | FB | 変換層。水温の換算、通信ウォッチドッグ |
+| `FB_Washlet.st` | FB | 制御層。非常停止・異常・インターロック・状態遷移・ヒーター制御 |
+| `PLC_PRG.st` | プログラム | 層を順に呼ぶだけ |
 
-## 3. PLC_PRG：1サイクルの流れ
+## 3. 層に分ける：差し替えるのは I/O 層だけ
+
+PLC の中を 3 つの層に分けてある。狙いは、Web の機械モデルから実機の IO ユニットに替えるとき、**I/O 層だけを書き換えれば済む** ようにすること。
+
+```mermaid
+flowchart TB
+    subgraph L1["I/O 層（PRG_IoModbus）… IO の種類ごとに替える"]
+        RIN["ReadInputs<br/>aFromTS → stRawIn"]
+        ROUT["WriteOutputs<br/>stRawOut → aToTS"]
+    end
+    subgraph L2["変換層（FB_WashInputConv）… IO が替わってもそのまま"]
+        CONV["水温 ÷100<br/>通信ウォッチドッグ 500ms<br/>（チャタリング除去を入れるならここ）"]
+    end
+    subgraph L3["制御層（FB_Washlet）… IO が替わってもそのまま"]
+        FB["非常停止・異常・インターロック<br/>状態遷移・ヒーター"]
+    end
+    RIN -- "GVL_IO.stRawIn<br/>ST_WashRawInputs" --> CONV
+    CONV -- "GVL_IO.stIn<br/>ST_WashInputs" --> FB
+    FB -- "GVL_IO.stOut → stRawOut<br/>ST_WashOutputs" --> ROUT
+```
+
+- 実機にするときは `PRG_IoModbus` を外し、`GVL_IO.stRawIn` / `stRawOut` を IO ユニットの I/O マッピングに割り当てる
+- 生の値（`stRawIn`）と制御が使う値（`stIn`）を分けておくと、「IO からは何が来ているか」と「FB は何を見て判断したか」を別々にモニタできる
+- `FB_Washlet` の入力は `stIn` 1 本（VAR_INPUT）。数十バイトと小さく、呼んだ時点の値がコピーされるので 1 サイクルの間は値が変わらない
+- アクチュエータは `stOut` にまとめ、状態の出力（`eState` / `eAlarm` / 許可）は個別のまま残す。「機械を動かす出力」と「状態を知らせる出力」を分けるため
+- `GVL_IO` の各変数を書くのは 1 か所だけ（`stRawIn` は `PRG_IoModbus`、ほかは `PLC_PRG`）
+
+## 4. PLC_PRG：1サイクルの流れ
 
 PLC は 10ms ごとに、上から下まで1回ずつ実行する。順番が大事。
 
 ```mermaid
 flowchart TD
-    A([サイクル開始]) --> B["① 入力の取り込み<br/>aFromTS[0] のビット → GVL_IO.bEStopOk など<br/>aFromTS[1] ÷ 100 → rWaterTemp"]
-    B --> C{"② ハートビート aFromTS[2] は<br/>前回から変わった？"}
-    C -- 変わった --> D["タイマをリセット"]
-    C -- "500ms 変わらない" --> E["bIoHealthy := FALSE<br/>（入力を信用しない）"]
+    A([サイクル開始]) --> B["① I/O 層（入力）<br/>PRG_IoModbus.ReadInputs<br/>aFromTS → GVL_IO.stRawIn"]
+    B --> C["② 変換層<br/>fbInputConv：stRawIn → GVL_IO.stIn"]
+    C --> C1{"ハートビートは<br/>前回から変わった？"}
+    C1 -- 変わった --> D["タイマをリセット"]
+    C1 -- "500ms 変わらない" --> E["stIn.bIoHealthy := FALSE<br/>（入力を信用しない）"]
     D --> F
     E --> F
-    F["③ fbWashlet を呼ぶ"] --> G["④ FB の出力 → GVL_IO.bPump など"]
-    G --> H["⑤ 出力・状態・異常を aToTS へ詰める<br/>PLC のハートビートを +1"]
+    F["③ 制御層<br/>fbWashlet(stIn) → GVL_IO.stOut"] --> G["④ 出力のコピー<br/>stOut → stRawOut"]
+    G --> H["⑤ I/O 層（出力）<br/>PRG_IoModbus.WriteOutputs<br/>出力・状態・異常を aToTS へ。PLC のハートビートを +1"]
     H --> Z([サイクル終了])
 ```
 
 - 通信の見張り（ウォッチドッグ）は「Web 側が毎回 +1 する数字が止まったら、ケーブルが抜けたとみなす」仕組み
 - 入力が止まると、センサの値は「最後に見えた値」のまま固まる。座っていないのに「座っている」と見え続けるかもしれないので、信用せずに止める
+- ウォッチドッグは変換層にある。実機の IO ユニットでも「入力が生きているか」の判断は要るので、I/O 層ではなく変換層に置いた（実機では、IO ユニットの通信状態のビットなどを使う形に替える）
 
-## 4. FB_Washlet：中は6段構え
+## 5. FB_Washlet：中は6段構え
 
 FB の中も上から順に実行する。**止める判断が、動かす判断より先** に来るのが肝。
 
@@ -115,7 +151,7 @@ flowchart LR
 - CASE の各状態に書き散らすと、状態を足したときに書き忘れる。入口で1回だけ判定すれば漏れない
 - 異常の理由（`eAlarm`）は **最初の1件だけ** 残す。連鎖して出る2件目で上書きすると、本当の原因が分からなくなる
 
-### 4. 状態遷移（次の章で図にする）
+### 4. 状態遷移（6 章で図にする）
 
 ### 5. ヒーターはヒステリシスで制御
 
@@ -136,14 +172,14 @@ stateDiagram-v2
 ### 6. 出力は「状態 AND 条件」で二重にかける
 
 ```
-bPump := eState = E_WashState.SPRAY AND bSprayPermit;
+stOut.bPump := eState = E_WashState.SPRAY AND bSprayPermit;
 ```
 
 - 状態遷移にバグがあって SPRAY のまま残っても、立った瞬間に `bSprayPermit` が FALSE になりポンプは止まる
 - 出力を書くのはこの1か所だけ。誰が止めたか追いやすい
 - ヒーターは ESTOP 中と FAULT 中も OFF。「解除しただけでは何も動かさない」を徹底する
 
-## 5. 状態遷移図
+## 6. 状態遷移図
 
 ```mermaid
 stateDiagram-v2
@@ -189,7 +225,7 @@ stateDiagram-v2
 - FAULT は、原因が残っている間はリセットを受け付けない（例：お湯が冷めるまで待つ）
 - CASE の `ELSE`（想定外の値）も FAULT に落とす。来てはいけない場所に来たら止める
 
-## 6. 異常の一覧
+## 7. 異常の一覧
 
 | 異常（E_WashAlarm） | いつ出る | リセットできる条件 |
 |---|---|---|
@@ -201,7 +237,7 @@ stateDiagram-v2
 | IO_LINK_LOST | 機械からの入力が 500ms 途絶えた | 通信が戻ってから |
 | INVALID_STATE | 状態が想定外の値 | リセット |
 
-## 7. 非常停止を押したときの流れ
+## 8. 非常停止を押したときの流れ
 
 ハード（安全リレー）が先に動力を切り、PLC はあとから状態を合わせる。PLC は「後始末係」。
 
@@ -231,9 +267,10 @@ sequenceDiagram
     P->>P: 状態 := IDLE
 ```
 
-## 8. まとめ
+## 9. まとめ
 
 - PLC は判断だけ。物理と最後の安全装置（安全リレー・温度ヒューズ）は外にある
+- PLC の中は I/O 層・変換層・制御層の 3 つ。IO を替えるときは I/O 層だけを替える
 - 止める判断は CASE より先。非常停止と異常は入口で1回だけ見る
 - インターロックは名前つきの BOOL にして、遷移と出力の2か所でかける
 - 非常停止・異常からの再開は、リセット操作のあと、安全側（ノズル収納）から

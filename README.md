@@ -15,14 +15,15 @@ CODESYS 側のコードの解説（状態遷移図・フローチャート付き
 実機と同じ役割分担にしてある。PLC は「センサを読んで、出力を返す」だけで、物理現象は持たない。
 
 ```
-┌──────────── Web（web/src/plant.ts） ────────────┐        ┌──── CODESYS ────┐
-│ 機械モデル                                      │        │                 │
-│  ・非常停止ボタン（NC接点）                     │  HR    │  PLC_PRG        │
-│  ・着座センサ / リモコン（おしり・止・リセット）│ ─────▶ │   ├ 通信WDT      │
-│  ・ノズル（ソレノイド + 伸長端/収納端センサ）   │        │   └ FB_Washlet  │
-│  ・温水タンク（ヒーター + 温度センサ）          │  IR    │                 │
-│  ・ポンプ                                       │ ◀───── │                 │
-│ PLC の外の安全回路                              │        └─────────────────┘
+┌──────────── Web（web/src/plant.ts） ────────────┐        ┌────── CODESYS ───────┐
+│ 機械モデル                                      │        │                      │
+│  ・非常停止ボタン（NC接点）                     │  HR    │  I/O 層              │
+│  ・着座センサ / リモコン（おしり・止・リセット）│ ─────▶ │   PRG_IoModbus       │
+│  ・ノズル（ソレノイド + 伸長端/収納端センサ）   │        │  変換層              │
+│  ・温水タンク（ヒーター + 温度センサ）          │  IR    │   FB_WashInputConv   │
+│  ・ポンプ                                       │ ◀───── │  制御層              │
+│                                                 │        │   FB_Washlet         │
+│ PLC の外の安全回路                              │        └──────────────────────┘
 │  ・安全リレー（非常停止で全動力を遮断）         │
 │  ・温度ヒューズ（55℃で切れる。交換するまで戻らない）│
 └─────────────────────────────────────────────────┘
@@ -31,11 +32,14 @@ CODESYS 側のコードの解説（状態遷移図・フローチャート付き
 | 持ち場 | 中身 |
 |---|---|
 | PLC（FB_Washlet） | 状態遷移、インターロック、非常停止・異常の判断、ヒーターの温度制御（38℃ ヒステリシス）、42℃ で FAULT |
-| PLC（PLC_PRG） | Modbus 配列 ⇔ GVL_IO の詰め替え、通信ウォッチドッグ（500ms） |
+| PLC（FB_WashInputConv） | 変換層。生の値 → 制御が使う値（水温 ÷100、通信ウォッチドッグ 500ms） |
+| PLC（PRG_IoModbus） | I/O 層。Modbus 配列 ⇔ `GVL_IO.stRawIn` / `stRawOut` の詰め替え |
+| PLC（PLC_PRG） | 層を順に呼ぶだけ（I/O 層の入力 → 変換層 → 制御層 → 出力のコピー → I/O 層の出力） |
 | Web（plant.ts） | ノズルの動き、水温の変化、センサの値、水の行き先（もも・床・便器）、安全リレー、温度ヒューズ、故障注入 |
 | Web（server.ts） | 50ms ごとに PLC と1往復（IR を読む → 機械を進める → HR を書く）、SSE 配信 |
 
-PLC から見た I/O は `GVL_IO` に集めてある。実機につなぐときは `PLC_PRG` の詰め替え部分を実 I/O に変えるだけで、`FB_Washlet` はそのまま使える。
+PLC の中は 3 つの層に分けてある。層の間の受け渡しは `GVL_IO` の構造体 4 つ（`stRawIn` / `stIn` / `stOut` / `stRawOut`）。
+実機の IO ユニットにつなぐときは、I/O 層（`PRG_IoModbus`）を外して `stRawIn` / `stRawOut` を I/O マッピングで割り当てるだけで、変換層と制御層はそのまま使える。
 
 数値（ヒーターの上がり方、噴射量、ヒューズの温度など）はすべてシミュレーション用の設定値で、実在の製品の仕様ではない。
 
@@ -53,8 +57,9 @@ PLC から見た I/O は `GVL_IO` に集めてある。実機につなぐとき�
 
 ## CODESYS の設定
 
-1. ST を取り込む：[codesys-st-sync](../codesys-st-sync) で `codesys\src` をプロジェクト（例：`codesys\Washlet.project`）にインポート
-   - 列挙型 2つ（`E_WashState` / `E_WashAlarm`）、GVL 2つ、FB 1つ、プログラム 1つ
+1. ST を取り込む：[codesys-st-sync](https://github.com/virtualShelf/codesys-st-sync) で `codesys\src` をプロジェクト（`codesys\washlet.project`）にインポート
+   - 列挙型 2つ（`E_WashState` / `E_WashAlarm`）、構造体 3つ（`ST_WashRawInputs` / `ST_WashInputs` / `ST_WashOutputs`）、GVL 2つ、FB 2つ（`FB_Washlet` / `FB_WashInputConv`）、プログラム 2つ（`PLC_PRG` / `PRG_IoModbus`。`PRG_IoModbus` にはアクション `ReadInputs` / `WriteOutputs`）
+   - タスクに入れるのは `PLC_PRG` だけ（`PRG_IoModbus` は `PLC_PRG` から呼ぶ）
 2. タスク設定：`MainTask` に `PLC_PRG`（周期 10ms 程度）
 3. Modbus：Ethernet の下に ModbusTCP Slave Device を追加
    - Input Registers：**10**、Holding Registers：**10**
